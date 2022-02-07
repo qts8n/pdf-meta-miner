@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  tika:
+    build:
+      context: ./tika
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: "${DOCKER_TIKA_CONTAINER_NAME}"
+    ports:
+      - "${TIKA_PORT}:9998"
