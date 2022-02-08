@@ -1,8 +1,4 @@
 venv
-.env*
-!.env.docker
-config.yaml
-config.yml
 .idea
 .vscode
 .devcontainer

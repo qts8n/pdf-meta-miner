@@ -1,4 +1,5 @@
-import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import sys
 
 import cv2
@@ -6,8 +7,10 @@ import fitz
 import numpy as np
 from tika import parser
 
+_NUM_WORKERS = 28
+
 _PDF_DPI = 144
-_THR_TOL = 3  # in pixels
+_THR_TOL = 5  # in pixels
 _DTYPE = np.dtype('uint8')
 _DTYPE.newbyteorder('=')
 
@@ -139,7 +142,7 @@ def page_to_image(page):
     return image
 
 
-def page_image_to_meta(page_image, line_min_width=50):
+async def page_image_to_meta(page_image, line_min_width=50):
     gray_image = cv2.cvtColor(page_image, cv2.COLOR_RGB2GRAY)
     thr_image = np.zeros_like(gray_image)
     thr_image[gray_image < 128] = 255
@@ -151,12 +154,24 @@ def page_image_to_meta(page_image, line_min_width=50):
     thr_image_v = cv2.morphologyEx(thr_image, cv2.MORPH_OPEN, kernel_v)
     thr_image_final = cv2.dilate(thr_image_h | thr_image_v, final_kernel, iterations=1)
     metadata_boxes = parse_metadata(thr_image_final)
+    if metadata_boxes is None:
+        return None
+
+    ocr_tasks = []
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=_NUM_WORKERS) as executor:
+        for box in metadata_boxes.values():
+            crop = page_image[box[1]:box[3], box[0]:box[2], :]
+            crop_bytes = cv2.imencode('.jpg', crop)[1].tobytes()
+            task = loop.run_in_executor(
+                executor,
+                parser.from_buffer,
+                # Allows us to pass in multiple arguments to `parser.from_buffer`
+                *(crop_bytes, _TIKA_ENDPOINT, False, _TIKA_HEADERS))
+            ocr_tasks.append(task)
+        responses = await asyncio.gather(*ocr_tasks)
     metadata = {}
-    for box_type, box in metadata_boxes.items():
-        crop = page_image[box[1]:box[3], box[0]:box[2], :]
-        cv2.imwrite(f'./assets/{box_type}.jpg', crop)
-        crop_bytes = cv2.imencode('.jpg', crop)[1].tobytes()
-        response = parser.from_buffer(crop_bytes, _TIKA_ENDPOINT, headers=_TIKA_HEADERS)
+    for box_type, response in zip(metadata_boxes.keys(), responses):
         content = response['content']
         if content is not None:
             content = content.strip().replace('\n', ' ')
@@ -164,7 +179,31 @@ def page_image_to_meta(page_image, line_min_width=50):
     return metadata
 
 
-_PDF_PAGE = 3
+def page_to_meta(page):
+    page_image = page_to_image(page)
+    return asyncio.run(page_image_to_meta(page_image))
+
+
+async def extract_pages_metadata(document):
+    parse_tasks = []
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=_NUM_WORKERS) as executor:
+        for page in document:
+            task = loop.run_in_executor(
+                executor,
+                page_to_meta,
+                page)
+            parse_tasks.append(task)
+        pages_metadata = await asyncio.gather(*parse_tasks)
+    return pages_metadata
+
+
+def async_document_to_metadata(document):
+    return asyncio.run(extract_pages_metadata(document))
+
+
+def document_to_metadata(document):
+    return [page_to_meta(page) for page in document]
 
 
 def main(argv: list[str]) -> int:
@@ -173,12 +212,10 @@ def main(argv: list[str]) -> int:
     pdf_path = argv[0]
     document = fitz.open(pdf_path)
 
-    page = document.load_page(_PDF_PAGE)
-    page_image = page_to_image(page)
-    cv2.imwrite(f'./assets/{_PDF_PAGE}.jpg', page_image)
-    metadata = page_image_to_meta(page_image)
-    print(metadata)
-
+    metadata = document_to_metadata(document)
+    for page_num, page_metadata in enumerate(metadata, start=1):
+        print('\tPAGE:', page_num)
+        print(page_metadata)
     return 0
 
 
