@@ -184,24 +184,6 @@ def page_to_meta(page):
     return asyncio.run(page_image_to_meta(page_image))
 
 
-async def extract_pages_metadata(document):
-    parse_tasks = []
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=_NUM_WORKERS) as executor:
-        for page in document:
-            task = loop.run_in_executor(
-                executor,
-                page_to_meta,
-                page)
-            parse_tasks.append(task)
-        pages_metadata = await asyncio.gather(*parse_tasks)
-    return pages_metadata
-
-
-def async_document_to_metadata(document):
-    return asyncio.run(extract_pages_metadata(document))
-
-
 def document_to_metadata(document):
     return [page_to_meta(page) for page in document]
 
